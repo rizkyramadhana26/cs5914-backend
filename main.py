@@ -1,5 +1,8 @@
 from peft import PeftModel, PeftConfig
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM
+from presidio_analyzer import AnalyzerEngine
+from presidio_anonymizer import AnonymizerEngine
+from presidio_anonymizer.entities import OperatorConfig
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForCausalLM, pipeline
 import runpod
 import torch
 
@@ -8,6 +11,9 @@ t5_model = AutoModelForSeq2SeqLM.from_pretrained("rizkyramadhana26/t5-pii-maskin
 llama_tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
 llama_model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.1-8B-Instruct", device_map="auto", trust_remote_code=True)
 llama_model.load_adapter("rizkyramadhana26/llama-3.1-pii-masking-ai4privacy-v3")
+classifier = pipeline("ner", model="yeana/my_extractive_app")
+analyzer = AnalyzerEngine()
+anonymizer = AnonymizerEngine()
 
 def handler(job):
     text = job['input']['text']
@@ -37,6 +43,30 @@ def handler(job):
             )
         generated_text = llama_tokenizer.decode(output[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True)
         return generated_text
+    elif model == 'bert':
+        labels = classifier(text)
+        labels = sorted(labels, key=lambda x: x['start'])
+        merged = []
+        for p in labels:
+            start, end = p['start'], p['end']
+            ent = p['entity']
+            core = ent.split('-', 1)[-1] if '-' in ent else ent
+
+            if ent.startswith('B-') or not merged:
+                merged.append({'start': start, 'end': end, 'entity': core})
+            else:
+                last = merged[-1]
+                if last['entity'] == core and start <= last['end']:
+                    last['end'] = max(last['end'], end)
+                else:
+                    merged.append({'start': start, 'end': end, 'entity': core})
+        for span in sorted(merged, key=lambda x: x['start'], reverse=True):
+            text = text[:span['start']] + f"[{span['entity']}]" + text[span['end']:]
+        return text
+    elif model == 'presidio':
+        analyzer_results = analyzer.analyze(text=text, language='en')
+        anonymized_text = anonymizer.anonymize(text=text, analyzer_results=analyzer_results, operators={"DEFAULT": OperatorConfig("replace")})
+        return anonymized_text.text
     else:
         return 'Error!'
     

@@ -3,3 +3,5 @@ runpod
 torch
 accelerate
 peft
+presidio_anonymizer
+presidio_analyzer
